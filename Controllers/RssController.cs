@@ -54,7 +54,7 @@ namespace rsscrawlercore.Controllers
         }
 
         [HttpGet, Route("/rss/gamersky")]
-        public IActionResult GetGamersky()
+        public async Task<IActionResult> GetGamerskyAsync()
         {
             var now = DateTime.Now;
             var cacheFile = Path.Combine(Path.GetTempPath(), "gamerskyrss.xml");
@@ -91,22 +91,17 @@ namespace rsscrawlercore.Controllers
                     entries.Add(entry);
                 }
             }
-            Parallel.ForEach(entries, new ParallelOptions()
-            {
-                MaxDegreeOfParallelism = 16,
-            },
-            e =>
+            var tasks = entries.Select(async e =>
             {
                 try
                 {
                     Console.WriteLine($"Fetching: {e.Link}");
                     var entryweb = new HtmlWeb();
-                    var entrydoc = entryweb.Load(e.Link);
+                    var entrydoc = await entryweb.LoadFromWebAsync(e.Link);
                     try
                     {
                         var content = entrydoc.DocumentNode.Descendants().Where(p => p.Name == "div" && p.HasClass("Mid2L_con")).FirstOrDefault();
                         e.Content = content.InnerHtml;
-
                     }
                     catch (Exception) { }
                     try
@@ -122,10 +117,10 @@ namespace rsscrawlercore.Controllers
                     catch (Exception) { }
                 }
                 catch (Exception) { }
-
             });
+            await Task.WhenAll(tasks);
 
-            var feed = FormatGamerskyFeed(entries).GetAwaiter().GetResult();
+            var feed = await FormatGamerskyFeed(entries);
 
             System.IO.File.WriteAllText(cacheFile, feed);
 
