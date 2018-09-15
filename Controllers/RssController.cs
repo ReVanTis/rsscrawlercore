@@ -37,16 +37,27 @@ namespace rsscrawlercore.Controllers
 
                 foreach (var e in entries)
                 {
-
-                    var item = new SyndicationItem()
+                    try
                     {
-                        Id = e.Link,
-                        Title = e.Title,
-                        Published = e.PubDate,
-                        Description = e.Content,
-                    };
-                    item.AddLink(new SyndicationLink(new Uri(e.Link)));
-                    await writer.Write(item);
+                        var item = new SyndicationItem()
+                        {
+                            Id = e.Link,
+                            Title = e.Title,
+                            Published = e.PubDate,
+                            Description = e.Content,
+                        };
+                        item.AddLink(new SyndicationLink(new Uri(e.Link)));
+                        await writer.Write(item);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Issue happens during generating rss for {e.Link}");                        
+                        Console.WriteLine(e.Title);
+                        Console.WriteLine(e.Content);
+                        Console.WriteLine(e.PubDate);
+                        
+                        Console.WriteLine(ex.ToString());
+                    }
                 }
                 xmlWriter.Flush();
             }
@@ -58,7 +69,7 @@ namespace rsscrawlercore.Controllers
         {
             var now = DateTime.Now;
             var cacheFile = Path.Combine(Path.GetTempPath(), "gamerskyrss.xml");
-            if(System.IO.File.Exists(cacheFile))
+            if (System.IO.File.Exists(cacheFile))
             {
                 if (now - LastUpdateTime < new TimeSpan(0, 30, 0))
                 {
@@ -72,7 +83,7 @@ namespace rsscrawlercore.Controllers
             }
 
             LastUpdateTime = now;
-            var GamerskyURL = @"http://www.gamersky.com/";
+            var GamerskyURL = @"https://www.gamersky.com/";
             var web = new HtmlWeb();
             Console.WriteLine($"Fetching: {GamerskyURL}");
             HtmlDocument doc = web.Load(GamerskyURL);
@@ -86,39 +97,53 @@ namespace rsscrawlercore.Controllers
                 {
                     var entry = new GamerskyEntry();
                     entry.Link = l.ChildNodes[0].ChildNodes[0].Attributes["href"].Value;
+                    if (entry.Link.StartsWith("/"))
+                    {
+                        entry.Link = "https://www.gamersky.com" + entry.Link;
+                    }
                     entry.Title = l.ChildNodes[0].ChildNodes[0].Attributes["title"].Value;
                     entry.PubDate = now;
                     entries.Add(entry);
                 }
             }
-            var tasks = entries.Select(async e =>
-            {
-                try
-                {
-                    Console.WriteLine($"Fetching: {e.Link}");
-                    var entryweb = new HtmlWeb();
-                    var entrydoc = await entryweb.LoadFromWebAsync(e.Link);
-                    try
-                    {
-                        var content = entrydoc.DocumentNode.Descendants().Where(p => p.Name == "div" && p.HasClass("Mid2L_con")).FirstOrDefault();
-                        e.Content = content.InnerHtml;
-                    }
-                    catch (Exception) { }
-                    try
-                    {
-                        var Date = entrydoc.DocumentNode.Descendants().Where(p => p.Name == "div" && p.HasClass("detail")).FirstOrDefault();
-                        Regex re = new Regex(@"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}");
-                        var match = re.Match(Date.InnerText);
-                        if (match.Success)
-                        {
-                            e.PubDate = DateTime.Parse(match.Groups[0].ToString());
-                        }
-                    }
-                    catch (Exception) { }
-                }
-                catch (Exception) { }
-            });
-            await Task.WhenAll(tasks);
+            //var tasks = entries.Select(async e =>
+            Parallel.ForEach(entries, new ParallelOptions { MaxDegreeOfParallelism = 32 }, e =>
+             {
+                 try
+                 {
+                     //Console.WriteLine($"Fetching: {e.Title} {e.Link}");
+                     var entryweb = new HtmlWeb();
+                     var entrydoc = entryweb.Load(e.Link);
+                     try
+                     {
+                         var content = entrydoc.DocumentNode.Descendants().Where(p => p.Name == "div" && p.HasClass("Mid2L_con")).FirstOrDefault();
+                         e.Content = content.InnerHtml;
+                     }
+                     catch (Exception)
+                     {
+                         Console.WriteLine($"Failed to load content in {e.Link}");
+                     }
+                     try
+                     {
+                         var Date = entrydoc.DocumentNode.Descendants().Where(p => p.Name == "div" && p.HasClass("detail")).FirstOrDefault();
+                         Regex re = new Regex(@"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}");
+                         var match = re.Match(Date.InnerText);
+                         if (match.Success)
+                         {
+                             e.PubDate = DateTime.Parse(match.Groups[0].ToString());
+                         }
+                     }
+                     catch (Exception)
+                     {
+                         Console.WriteLine($"Failed to load Datetime in {e.Link}");
+                     }
+                 }
+                 catch (Exception ex)
+                 {
+                     Console.WriteLine($"Other issue happens during processing {e.Link}");
+                     Console.WriteLine(ex.ToString());
+                 }
+             });
 
             var feed = await FormatGamerskyFeed(entries);
 
