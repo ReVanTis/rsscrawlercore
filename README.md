@@ -29,6 +29,7 @@ or publish then deploy to anywhere you want.
 Currently supported feeds:
 
 * [Gamersky](http://www.gamersky.com)
+* [World of Tanks Shop (CN360 Server)](https://shop.wot.360.cn/)
 
 Used library:
 
