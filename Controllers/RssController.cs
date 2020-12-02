@@ -11,8 +11,20 @@ using HtmlAgilityPack;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.SyndicationFeed;
 using Microsoft.SyndicationFeed.Rss;
+using System.Threading;
+using System.Net;
+
 namespace rsscrawlercore.Controllers
 {
+    public class GZipWebClient : WebClient
+    {
+        protected override WebRequest GetWebRequest(Uri address)
+        {
+            HttpWebRequest request = (HttpWebRequest)base.GetWebRequest(address);
+            request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+            return request;
+        }
+    }
     public class GamerskyEntry
     {
         public string Link { get; set; }
@@ -22,7 +34,22 @@ namespace rsscrawlercore.Controllers
     }
     public class RssController : Controller
     {
+        public static string DateTimeFormat = @"yyyy-MM-dd HH:mm:ss";
         public static DateTime LastUpdateTime = DateTime.UtcNow;
+        public static ReaderWriterLockSlim FileLock = new ReaderWriterLockSlim();
+        public HtmlDocument DownloadGzipHtml(string siteUrl)
+        {
+            using (var wc = new GZipWebClient())
+            {
+                wc.Headers[HttpRequestHeader.AcceptEncoding] = "gzip";
+                wc.Headers[HttpRequestHeader.UserAgent] = @"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:62.0) Gecko/20100101 Firefox/62.0";
+                wc.Encoding = Encoding.UTF8;
+                string html = wc.DownloadString(siteUrl);
+                var htmldocObject = new HtmlDocument();
+                htmldocObject.LoadHtml(html);
+                return htmldocObject;
+            }
+        }
         private async Task<string> FormatGamerskyFeed(IEnumerable<GamerskyEntry> entries)
         {
             var sw = new StringWriterWithEncoding(Encoding.UTF8);
@@ -32,7 +59,7 @@ namespace rsscrawlercore.Controllers
                 var writer = new RssFeedWriter(xmlWriter);
                 await writer.WriteTitle("Gamersky RSS feed");
                 await writer.WriteDescription("Gamersky RSS feed");
-                await writer.Write(new SyndicationLink(new Uri("http://www.gamersky.com/")));
+                await writer.Write(new SyndicationLink(new Uri("https://www.gamersky.com/")));
                 await writer.WritePubDate(DateTimeOffset.UtcNow);
 
                 foreach (var e in entries)
@@ -51,11 +78,11 @@ namespace rsscrawlercore.Controllers
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Issue happens during generating rss for {e.Link}");                        
+                        Console.WriteLine($"Issue happens during generating rss for {e.Link}");
                         Console.WriteLine(e.Title);
                         Console.WriteLine(e.Content);
                         Console.WriteLine(e.PubDate);
-                        
+
                         Console.WriteLine(ex.ToString());
                     }
                 }
@@ -63,30 +90,25 @@ namespace rsscrawlercore.Controllers
             }
             return sw.ToString();
         }
-
         [HttpGet, Route("/rss/gamersky")]
-        public async Task<IActionResult> GetGamerskyAsync()
+        public async Task<IActionResult> GetGamerskyCached()
         {
-            var now = DateTime.Now;
+            await UpdateGamersky();
             var cacheFile = Path.Combine(Path.GetTempPath(), "gamerskyrss.xml");
-            if (System.IO.File.Exists(cacheFile))
-            {
-                if (now - LastUpdateTime < new TimeSpan(0, 30, 0))
-                {
-                    Console.WriteLine("Cache hit!");
-                    return Content(System.IO.File.ReadAllText(cacheFile), "application/xml");
-                }
-                else
-                {
-                    System.IO.File.Delete(cacheFile);
-                }
-            }
+            FileLock.EnterReadLock();
+            string feed = System.IO.File.ReadAllText(cacheFile);
+            FileLock.ExitReadLock();
+            return Content(feed, "application/xml");
+        }
 
-            LastUpdateTime = now;
-            var GamerskyURL = @"https://www.gamersky.com/";
-            var web = new HtmlWeb();
+        public async Task UpdateGamersky()
+        {
+            LastUpdateTime = DateTime.Now;
+            var GamerskyURL = @"https://www.gamersky.com";
+
+            //var web = new HtmlWeb();
             Console.WriteLine($"Fetching: {GamerskyURL}");
-            HtmlDocument doc = web.Load(GamerskyURL);
+            HtmlDocument doc = DownloadGzipHtml(GamerskyURL);
             List<GamerskyEntry> entries = new List<GamerskyEntry>();
 
             var ptxt = doc.DocumentNode.Descendants().Where(p => p.Name == "ul" && p.HasClass("Ptxt")).ToList();
@@ -102,7 +124,7 @@ namespace rsscrawlercore.Controllers
                         entry.Link = "https://www.gamersky.com" + entry.Link;
                     }
                     entry.Title = l.ChildNodes[0].ChildNodes[0].Attributes["title"].Value;
-                    entry.PubDate = now;
+                    entry.PubDate = LastUpdateTime;
                     entries.Add(entry);
                 }
             }
@@ -112,8 +134,8 @@ namespace rsscrawlercore.Controllers
                  try
                  {
                      //Console.WriteLine($"Fetching: {e.Title} {e.Link}");
-                     var entryweb = new HtmlWeb();
-                     var entrydoc = entryweb.Load(e.Link);
+                     //var entryweb = new HtmlWeb();
+                     var entrydoc = DownloadGzipHtml(e.Link);
                      try
                      {
                          var content = entrydoc.DocumentNode.Descendants().Where(p => p.Name == "div" && p.HasClass("Mid2L_con")).FirstOrDefault();
@@ -144,13 +166,16 @@ namespace rsscrawlercore.Controllers
                      Console.WriteLine(ex.ToString());
                  }
              });
-
             var feed = await FormatGamerskyFeed(entries);
 
+            FileLock.EnterWriteLock();
+            var cacheFile = Path.Combine(Path.GetTempPath(), "gamerskyrss.xml");
+            if (System.IO.File.Exists(cacheFile))
+                System.IO.File.Delete(cacheFile);
             System.IO.File.WriteAllText(cacheFile, feed);
+            FileLock.ExitWriteLock();
 
-            Console.WriteLine("Done.");
-            return Content(feed, "application/xml");
+            Console.WriteLine($"{DateTime.Now.ToString(DateTimeFormat)}:Cache Update Done.");
         }
     }
 }
